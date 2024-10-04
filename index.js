@@ -54,9 +54,9 @@ async function run() {
         });
 
 
-        app.get("/getUser/:id", async (req, res) => {
-            const { id } = req.params;
-            const user = await userCollection.findOne({ _id: new ObjectId(id) });
+        app.get("/getUser/:email", async (req, res) => {
+            const { email } = req.params;
+            const user = await userCollection.findOne({ email: email });
             if (!user) {
                 return res.status(404).json({ message: 'User not found' });
             }
@@ -190,7 +190,7 @@ async function run() {
             const { email } = req.params;
             try {
                 // Check if the user exists
-                const userExist = await userCollection.findOne({ userEmail: email });
+                const userExist = await userCollection.findOne({ email: email });
                 if (!userExist) {
                     return res.status(404).json({ message: 'User not found' });
                 }
@@ -284,6 +284,8 @@ async function run() {
     finally {
         // jnjsf
         // console.log('here is finally')
+        // DB_PASS = VZCR4IbfLQ12G3AJ
+        // DB_USER = ads_agency
     }
 };
 
