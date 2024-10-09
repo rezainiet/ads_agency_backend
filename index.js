@@ -25,7 +25,7 @@ const client = new MongoClient(uri, {
 
 async function run() {
     try {
-        client.connect();
+        await client.connect();
         const userCollection = client.db('users').collection('userCollection');
         const orderCollection = client.db('orders').collection('ordersCollection');
         const depositCollection = client.db('transactions').collection('depositCollection');
@@ -84,7 +84,7 @@ async function run() {
         });
 
         app.get("/getOrders", async (req, res) => {
-            const orders = await orderCollection.find().toArray();
+            const orders = await orderCollection.find({ status: "pending" }).toArray();
             res.status(200).json(orders);
         });
 
@@ -101,10 +101,11 @@ async function run() {
         });
 
         app.get("/getUserAdAccounts/:email", async (req, res) => {
-            const { email } = req.params;
+            const email = req.params.email;
             try {
                 // Check if the user exists
-                const userExist = await userCollection.findOne({ userEmail: email });
+                const userExist = await userCollection.findOne({ email: email });
+                console.log(email)
                 if (!userExist) {
                     return res.status(404).json({ message: 'User not found' });
                 }
@@ -137,10 +138,11 @@ async function run() {
             res.status(200).json(order);
         });
 
-        app.post("/deposit", async (req, res) => {
+        app.post("/deposit/:email", async (req, res) => {
+            const email = req.params.email;
             try {
                 const data = req.body;
-
+                console.log(data)
                 // Validate required fields
                 const requiredFields = ['userEmail', 'amount', 'transactionId', 'imgLink', 'paymentMethod'];
                 for (const field of requiredFields) {
@@ -155,7 +157,8 @@ async function run() {
                 }
 
                 // Check if user email exists
-                const userExist = await userCollection.findOne({ userEmail: data.userEmail });
+                const userExist = await userCollection.findOne({ userEmail: data.email });
+                console.log(userExist)
                 if (!userExist) {
                     return res.status(404).json({ message: 'User not found' });
                 }
@@ -205,6 +208,32 @@ async function run() {
             // Update deposit status to 'processed' if amount is greater than 0
             // await depositCollection.updateMany({ userEmail: email, amount: { $gt: 0 } }, { $set: { status: 'processed' } });
         });
+
+        // get all pending deposits
+
+        app.get("/getPendingDeposits", async (req, res) => {
+            const pendingDeposits = await depositCollection.find({ status: 'pending' }).toArray();
+            res.status(200).json(pendingDeposits);
+        });
+
+        // update deposit status to 'approved'
+
+        app.put("/approveDeposit/:id", async (req, res) => {
+            const { id } = req.params;
+            const { status } = req.body;
+            const deposit = await depositCollection.findOneAndUpdate(
+                { _id: new ObjectId(id) },
+                { $set: { status: status } },
+                { returnOriginal: true } // Return the updated document
+            );
+            if (!deposit.ok) {
+                return res.status(404).json({ message: 'Deposit not found' });
+            }
+            res.status(200).json(deposit);
+        });
+
+
+        // get all pending orders
 
 
         app.put("/updateAdAccountBmId/:id", async (req, res) => {
