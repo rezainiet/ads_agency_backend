@@ -65,26 +65,44 @@ async function run() {
 
         app.post("/order", async (req, res) => {
             const data = req.body;
-            console.log(data.userEmail)
+            console.log("bodyDataFromOrder", data);
+            console.log(data.userEmail);
 
             // Validate email format
             if (!validateEmail(data.userEmail)) {
                 return res.status(400).json({ message: 'Invalid email format' });
             }
-            // checkUser email exists or not
-            const userExist = await userCollection.findOne({ userEmail: data.userEmail });
-            if (!userExist) {
+
+            // Check if user exists
+            const user = await userCollection.findOne({ email: data.userEmail });
+            if (!user) {
                 return res.status(404).json({ message: 'User not found' });
-            };
+            }
 
-            // save the order to the database
+            // Check if user has sufficient balance
+            if (user.balance < data.totalAmount) {
+                return res.status(400).json({ message: 'Insufficient balance' });
+            }
+
+            // Deduct balance from user
+            const updatedBalance = user.balance - data.totalAmount;
+            await userCollection.updateOne(
+                { email: data.userEmail },
+                { $set: { balance: updatedBalance } }
+            );
+
+            // Save the order to the database
             const result = await orderCollection.insertOne(data);
-            res.status(201).json(result);
 
+            res.status(201).json({
+                message: 'Order placed successfully',
+                orderId: result.insertedId,
+                updatedBalance: updatedBalance
+            });
         });
 
         app.get("/getOrders", async (req, res) => {
-            const orders = await orderCollection.find({ status: "pending" }).toArray();
+            const orders = (await orderCollection.find({ status: "pending" }).toArray()).reverse();
             res.status(200).json(orders);
         });
 
@@ -221,16 +239,56 @@ async function run() {
         app.put("/approveDeposit/:id", async (req, res) => {
             const { id } = req.params;
             const { status } = req.body;
+
+            // Check if the transaction exists
+            const depositData = await depositCollection.findOne({ _id: new ObjectId(id) });
+            if (!depositData) {
+                console.log("Deposit not found");
+                return res.status(404).json({ message: 'Deposit not found' });
+            }
+
+            // Update deposit status
             const deposit = await depositCollection.findOneAndUpdate(
                 { _id: new ObjectId(id) },
                 { $set: { status: status } },
-                { returnOriginal: true } // Return the updated document
+                { returnDocument: 'after' } // Return the updated document
             );
-            if (!deposit.ok) {
-                return res.status(404).json({ message: 'Deposit not found' });
+            console.log("Deposit updated:", deposit);
+
+            // Find user by email stored in this transaction
+            const userExist = await userCollection.findOne({ email: depositData.userEmail });
+            console.log("User found:", userExist);
+            if (!userExist) {
+                return res.status(404).json({ message: 'User not found' });
             }
-            res.status(200).json(deposit);
+
+            // Only update user's balance if the status is 'approved'
+            if (status === 'approved') {
+                const updatedBalance = await userCollection.updateOne(
+                    { email: depositData.userEmail },
+                    { $inc: { balance: depositData.amount } } // Increment balance by deposit amount
+                );
+
+                if (updatedBalance.matchedCount === 0) {
+                    return res.status(404).json({ message: 'User not found for balance update' });
+                }
+
+                // Respond with the deposit and updated balance
+                return res.status(200).json({
+                    message: 'Deposit approved and balance updated',
+                    deposit: deposit.value,
+                    userBalance: userExist.balance + depositData.amount
+                });
+            }
+
+            // If status is not approved, respond without updating the balance
+            res.status(200).json({
+                message: `Deposit status updated to '${status}', but no balance change`,
+                deposit: deposit.value
+            });
         });
+
+
 
 
         // get all pending orders
@@ -239,6 +297,7 @@ async function run() {
         app.put("/updateAdAccountBmId/:id", async (req, res) => {
             const { id } = req.params; // Extract the ad account ID from the request parameters
             const { bmId } = req.body; // Extract bmId from the request body
+            const { status } = req.body;
 
             // Validate bmId
             if (!bmId) {
@@ -252,7 +311,7 @@ async function run() {
                     {
                         $set: {
                             "adAccounts.$.bmId": bmId, // Update the bmId field
-                            "adAccounts.$.status": "Pending" // Update the status field to "Pending"
+                            "adAccounts.$.status": "Paused" // Update the status field to "Paused"
                         }
                     }
                 );
@@ -270,6 +329,57 @@ async function run() {
             } catch (error) {
                 console.error('Error updating ad account:', error);
                 res.status(500).json({ message: 'Internal server error' });
+            }
+        });
+
+
+        app.get("/getBMShares", async (req, res) => {
+            try {
+                const bmShares = await orderCollection.aggregate([
+                    { $unwind: "$adAccounts" },
+                    {
+                        $match: {
+                            "adAccounts.bmId": { $exists: true, $ne: null },
+                            "adAccounts.status": "Pending"
+                        }
+                    },
+                    {
+                        $project: {
+                            id: "$adAccounts.id",
+                            accountName: "$adAccounts.name",
+                            email: "$userEmail",
+                            bmId: "$adAccounts.bmId",
+                            status: "$adAccounts.status"
+                        }
+                    }
+                ]).toArray();
+
+                res.status(200).json(bmShares);
+            } catch (error) {
+                console.error("Error fetching BM shares:", error);
+                res.status(500).json({ message: "Internal server error" });
+            }
+        });
+
+        // API to update BM Share status
+        app.put("/updateBMShareStatus/:id", async (req, res) => {
+            const { id } = req.params;
+            const { status } = req.body;
+
+            try {
+                const result = await orderCollection.updateOne(
+                    { "adAccounts.id": id },
+                    { $set: { "adAccounts.$.status": status } }
+                );
+
+                if (result.modifiedCount === 0) {
+                    return res.status(404).json({ message: "BM share not found or status not updated" });
+                }
+
+                res.status(200).json({ message: "BM share status updated successfully" });
+            } catch (error) {
+                console.error("Error updating BM share status:", error);
+                res.status(500).json({ message: "Internal server error" });
             }
         });
 
@@ -299,6 +409,78 @@ async function run() {
             }
         });
 
+        app.get("/getUserAdAccounts/:email", async (req, res) => {
+            const { email } = req.params;
+            console.log(email)
+            try {
+                const result = await orderCollection.findOne({ userEmail: email });
+
+                if (!result) {
+                    return res.status(404).json({ message: "No ad accounts found for this user" });
+                }
+
+                const adAccounts = result.adAccounts.map(account => ({
+                    id: account.id,
+                    name: account.name,
+                    adAccountType: account.adAccountType,
+                    status: account.status,
+                    timezone: account.timezone,
+                    deposit: account.deposit,
+                    bmId: account.bmId || null
+                }));
+
+                res.status(200).json(adAccounts);
+            } catch (error) {
+                console.error("Error fetching user ad accounts:", error);
+                res.status(500).json({ message: "Internal server error" });
+            }
+        });
+
+        app.put("/updateOrderStatus/:id", async (req, res) => {
+            const { id } = req.params;
+            const { status } = req.body;
+
+            try {
+                const result = await orderCollection.updateOne(
+                    { _id: new ObjectId(id) },
+                    { $set: { status: status } }
+                );
+                console.log(result)
+
+                if (result.modifiedCount === 0) {
+                    return res.status(404).json({ message: 'Order not found or status not updated' });
+                }
+
+                res.status(200).json({ message: 'Order status updated successfully' });
+            } catch (error) {
+                console.error('Error updating order status:', error);
+                res.status(500).json({ message: 'Internal server error' });
+            }
+        });
+
+        app.put("/updateAdAccountStatus/:orderId/:accountId", async (req, res) => {
+            const { orderId, accountId } = req.params;
+            const { status } = req.body;
+
+            try {
+                const result = await orderCollection.updateOne(
+                    {
+                        _id: new ObjectId(orderId),
+                        "adAccounts.id": accountId
+                    },
+                    { $set: { "adAccounts.$.status": status } }
+                );
+
+                if (result.modifiedCount === 0) {
+                    return res.status(404).json({ message: 'Order or ad account not found, or status not updated' });
+                }
+
+                res.status(200).json({ message: 'Ad account status updated successfully' });
+            } catch (error) {
+                console.error('Error updating ad account status:', error);
+                res.status(500).json({ message: 'Internal server error' });
+            }
+        });
 
 
 
